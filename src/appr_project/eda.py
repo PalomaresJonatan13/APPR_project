@@ -85,6 +85,9 @@ def unit_audit(sets: dict[str, pd.DataFrame]) -> pd.DataFrame:
                 "documented_unit": unit,
                 "n_observed": len(values),
                 "missing_pct": 100 * frame[column].isna().mean(),
+                "missing_pct_patients": 100 * (
+                    frame[column].isna().groupby(frame["patient_id"]).all().mean()
+                ),
                 "dtype": str(frame[column].dtype),
             }
             note = (
@@ -116,17 +119,9 @@ def unit_audit(sets: dict[str, pd.DataFrame]) -> pd.DataFrame:
                 elif column == "Magnesium":
                     note = "Suspected mg/dL scale despite documented mmol/dL; unconfirmed hypothesis."
                     invalid = values < 0
-                elif column == "Calcium":
-                    invalid = values < 0
-                    row["n_calcium_below_3"] = int(values.lt(3).sum())
-                    row["pct_calcium_below_3"] = 100 * values.lt(3).mean()
-                    note = (
-                        "Low-value cluster, especially B: possible mixed measurement types/scales; "
-                        "unconfirmed. Threshold <3 is descriptive, not a clinical validity rule."
-                    )
                 elif column == "Age":
                     invalid = (values < 0) | ((values >= 90) & (values != 100))
-                    note = "Years; check documented ≥90→100 encoding. Absence of 100 is not proof of error."
+                    note = "Years; check documented ≥90→100 encoding."
                 elif column == "HospAdmTime":
                     note = "Hours relative to ICU admission; positive values flagged separately, not converted."
                 elif column == "ICULOS":
@@ -151,31 +146,6 @@ def unit_audit(sets: dict[str, pd.DataFrame]) -> pd.DataFrame:
             row["assessment"] = note
             records.append(row)
     return pd.DataFrame(records)
-
-
-def fio2_scales(sets: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """Disjoint bins describe stored values, not inferred corrected measurements."""
-    rows = []
-    for name, frame in sets.items():
-        x = frame.FiO2.dropna()
-        bins = {
-            "negative": x < 0,
-            "zero": x == 0,
-            "(0,1] fraction-like": (x > 0) & (x <= 1),
-            "(1,20) ambiguous": (x > 1) & (x < 20),
-            "[20,100] percent-like": x.between(20, 100),
-            ">100": x > 100,
-        }
-        for label, mask in bins.items():
-            rows.append(
-                {
-                    "source_set": name,
-                    "stored_value_bin": label,
-                    "count": int(mask.sum()),
-                    "pct_observed": 100 * mask.mean(),
-                }
-            )
-    return pd.DataFrame(rows)
 
 
 def patient_summary(frame: pd.DataFrame) -> pd.DataFrame:
