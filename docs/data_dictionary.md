@@ -21,7 +21,7 @@ Las columnas siguientes corresponden a los archivos PSV originales. La columna d
 |---|---|---|
 | `BaseExcess` | mmol/L | **Exceso de bases:** estima el componente metabólico del equilibrio ácido-base. Un valor negativo indica déficit de bases; uno positivo, exceso. |
 | `HCO3` | mmol/L | **Bicarbonato:** sustancia que contribuye a regular la acidez de la sangre. |
-| `FiO2` | %; verificar escala | **Fracción inspirada de oxígeno:** proporción de oxígeno en el gas que respira el paciente. Puede aumentar al administrar oxígeno suplementario. Véase la nota sobre escalas. |
+| `FiO2` | %; verificar escala | **Fracción inspirada de oxígeno:** proporción de oxígeno en el gas que respira el paciente. Puede aumentar al administrar oxígeno suplementario. |
 | `pH` | Sin unidad | **Acidez o alcalinidad sanguínea:** valores menores indican mayor acidez y mayores, mayor alcalinidad. Es una magnitud logarítmica. |
 | `PaCO2` | mmHg | **Presión parcial arterial de CO₂:** refleja el dióxido de carbono disuelto en sangre arterial y aporta información sobre la ventilación. |
 | `SaO2` | % | **Saturación arterial de oxígeno:** porcentaje de hemoglobina que transporta oxígeno en sangre arterial. Se diferencia de `O2Sat` por el origen y método de medición. |
@@ -72,12 +72,6 @@ Las columnas siguientes corresponden a los archivos PSV originales. La columna d
 - **ng/mL:** nanogramos por mililitro.
 - **IU/L:** unidades internacionales por litro; en estas enzimas expresa actividad enzimática, no masa.
 - **µL:** microlitro, una millonésima parte de un litro.
-
-### Unidades que requieren verificación
-
-La tabla oficial publica `FiO2` en porcentaje, `Lactate` en mg/dL y `Magnesium` en mmol/dL. Estas etiquetas no bastan para confirmar la escala efectiva de cada archivo. Antes de convertir unidades o aplicar límites clínicos, contrastar la documentación de origen y los valores observados por hospital.
-
-Para `FiO2`, una proporción de `0.21` equivale a `21 %`; no deben tratarse como escalas intercambiables sin conversión. Las unidades publicadas para lactato y magnesio también requieren confirmación: no se ha validado aquí la unidad efectiva de los archivos. No convertir automáticamente basándose solo en que una unidad parezca inusual.
 
 ## Fuente
 
