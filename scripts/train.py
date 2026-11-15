@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from appr_project.data import load_partition
-from appr_project.training import Hyperparameters, train_experiment
+from appr_project.training import ARCHITECTURES, Hyperparameters, train_experiment
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -14,7 +14,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--architecture",
-        choices=("tower_grud", "semantic_grud"),
+        choices=ARCHITECTURES,
         default="tower_grud",
     )
     parser.add_argument("--source", choices=("A", "B", "A+B"), default="A")

@@ -19,9 +19,27 @@ SEMANTIC_GROUPS = {
     "hematology": ("Hct", "Hgb", "WBC", "Platelets", "Temp"),
 }
 
+SEMANTIC_GROUPS_3 = {
+    "hemodynamics_oxygenation": (
+        *SEMANTIC_GROUPS["hemodynamics"],
+        *SEMANTIC_GROUPS["respiration"],
+        "Temp",
+    ),
+    "renal_hepatic": (
+        *SEMANTIC_GROUPS["renal_chemistry"],
+        *SEMANTIC_GROUPS["hepatic"],
+    ),
+    "hematology": ("Hct", "Hgb", "WBC", "Platelets"),
+}
 
-def semantic_indices(temporal):
-    expected = {variable for group in SEMANTIC_GROUPS.values() for variable in group}
+GROUPS_BY_ARCHITECTURE = {
+    "semantic_grud": SEMANTIC_GROUPS,
+    "semantic_grud_3": SEMANTIC_GROUPS_3,
+}
+
+
+def semantic_indices(temporal, groups=SEMANTIC_GROUPS):
+    expected = {variable for group in groups.values() for variable in group}
     missing = expected.difference(temporal)
     extra = set(temporal).difference(expected)
     if missing or extra or len(temporal) != len(expected):
@@ -31,7 +49,7 @@ def semantic_indices(temporal):
         )
     return {
         name: [temporal.index(variable) for variable in group]
-        for name, group in SEMANTIC_GROUPS.items()
+        for name, group in groups.items()
     }
 
 
@@ -81,9 +99,16 @@ class SemanticGRUDCell(keras.layers.Layer):
 
 
 def build_model(
-    *, temporal_variables, static_features, window, units, dense_units, dropout
+    *,
+    temporal_variables,
+    static_features,
+    window,
+    units,
+    dense_units,
+    dropout,
+    architecture="semantic_grud",
 ):
-    groups = semantic_indices(temporal_variables)
+    groups = semantic_indices(temporal_variables, GROUPS_BY_ARCHITECTURE[architecture])
     layers, ops = keras.layers, keras.ops
     temporal = keras.Input((window, len(temporal_variables), 4), name="temporal")
     valid_hours = keras.Input((window,), dtype="bool", name="valid_hours")
@@ -114,5 +139,5 @@ def build_model(
     return keras.Model(
         inputs={"temporal": temporal, "valid_hours": valid_hours, "static": static},
         outputs=probability,
-        name="semantic_grud",
+        name=architecture,
     )

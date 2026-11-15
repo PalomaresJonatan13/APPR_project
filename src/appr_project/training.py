@@ -20,6 +20,8 @@ from appr_project.data import (
 from appr_project.evaluation import predict_hours, select_threshold, summarize_metrics
 from appr_project.models import semantic_grud, tower_grud
 
+ARCHITECTURES = ("tower_grud", *semantic_grud.GROUPS_BY_ARCHITECTURE)
+
 
 @dataclass(frozen=True)
 class Hyperparameters:
@@ -74,9 +76,11 @@ def _fit(train, validation, hp, *, epochs, patience, seed, architecture):
         "dense_units": hp.dense_units,
         "dropout": hp.dropout,
     }
-    if architecture == "semantic_grud":
+    if architecture in semantic_grud.GROUPS_BY_ARCHITECTURE:
         model = semantic_grud.build_model(
-            temporal_variables=standardization.temporal, **model_options
+            temporal_variables=standardization.temporal,
+            architecture=architecture,
+            **model_options,
         )
     else:
         model = tower_grud.build_model(
@@ -126,9 +130,10 @@ def _fit(train, validation, hp, *, epochs, patience, seed, architecture):
 
 def _write_model(run_dir, model, standardization, hp, threshold, settings):
     model.save(run_dir / "best.keras")
+    groups = semantic_grud.GROUPS_BY_ARCHITECTURE.get(model.name)
     tower_variables = (
-        list(semantic_grud.SEMANTIC_GROUPS.values())
-        if model.name == "semantic_grud"
+        list(groups.values())
+        if groups is not None
         else [[variable] for variable in standardization.temporal]
     )
     metadata = {
@@ -159,7 +164,7 @@ def train_experiment(
     seed,
     architecture="tower_grud",
 ):
-    if architecture not in ("tower_grud", "semantic_grud"):
+    if architecture not in ARCHITECTURES:
         raise ValueError(f"Unknown architecture: {architecture}")
     run_started = perf_counter()
     candidates = search_candidates(base, trials, seed)
