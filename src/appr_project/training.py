@@ -2,7 +2,6 @@
 
 import json
 from dataclasses import asdict, dataclass
-from itertools import product
 from pathlib import Path
 from statistics import median
 from time import perf_counter
@@ -35,22 +34,25 @@ class Hyperparameters:
 
 def search_candidates(base, trials, seed):
     """Evaluate the supplied configuration first, then sample distinct alternatives."""
-    grid = [
-        Hyperparameters(*values)
-        for values in product(
-            (8, 15, 24),
-            (8, 16, 32),
-            (32, 64),
-            (0.1, 0.2),
-            (0.0003, 0.001),
-            (64, 128, 256),
+    if trials < 1:
+        raise ValueError("trials must be positive.")
+
+    rng = np.random.default_rng(seed)
+    candidates = [base]
+    seen = {base}
+    while len(candidates) < trials:
+        candidate = Hyperparameters(
+            window=int(rng.integers(8, 24, endpoint=True)),
+            units=int(rng.integers(8, 32, endpoint=True)),
+            dense_units=int(rng.choice((32, 64))),
+            dropout=rng.uniform(0.0, 0.3),
+            learning_rate=10.0 ** rng.uniform(-4.0, -2.0),
+            batch_size=int(rng.choice((64, 128, 256))),
         )
-    ]
-    grid = [candidate for candidate in grid if candidate != base]
-    if not 1 <= trials <= len(grid) + 1:
-        raise ValueError(f"trials must be between 1 and {len(grid) + 1}.")
-    order = np.random.default_rng(seed).permutation(len(grid))[: trials - 1]
-    return [base, *(grid[index] for index in order)]
+        if candidate not in seen:
+            candidates.append(candidate)
+            seen.add(candidate)
+    return candidates
 
 
 def _fit(train, validation, hp, *, epochs, patience, seed, architecture):
@@ -154,8 +156,8 @@ def train_experiment(
     run_dir: Path,
     *,
     source,
-    base,
-    trials,
+    base=None,
+    trials=None,
     folds,
     validation_fraction,
     sample_patients,
@@ -163,20 +165,30 @@ def train_experiment(
     patience,
     seed,
     architecture="tower_grud",
+    candidates=None,
+    patient_splits=None,
 ):
+    """Train random search candidates or an explicit mapping of trial IDs to settings."""
     if architecture not in ARCHITECTURES:
         raise ValueError(f"Unknown architecture: {architecture}")
     run_started = perf_counter()
-    candidates = search_candidates(base, trials, seed)
-    splits = list(
-        split_patients(
-            frame,
-            validation_fraction=validation_fraction,
-            folds=folds,
-            seed=seed,
-            sample_patients=sample_patients,
+    if candidates is None:
+        if base is None or trials is None:
+            raise ValueError("Supply base and trials for a random search.")
+        candidates = dict(enumerate(search_candidates(base, trials, seed), start=1))
+    if not candidates:
+        raise ValueError("Supply at least one trial.")
+    splits = patient_splits
+    if splits is None:
+        splits = list(
+            split_patients(
+                frame,
+                validation_fraction=validation_fraction,
+                folds=folds,
+                seed=seed,
+                sample_patients=sample_patients,
+            )
         )
-    )
     run_dir.mkdir(parents=True, exist_ok=False)
     assignments = []
     for fold, (train_ids, val_ids) in enumerate(splits, start=1):
@@ -196,15 +208,17 @@ def train_experiment(
         "seed": seed,
         "epochs": epochs,
         "patience": patience,
-        "trials": trials,
+        "trials": len(candidates),
     }
     trial_rows, fold_rows = [], []
     best_score = -np.inf
-    for trial, hp in enumerate(candidates, start=1):
+    for position, (trial, hp) in enumerate(candidates.items(), start=1):
         predictions, scores, best_epochs = [], [], []
         for fold, (train_ids, val_ids) in enumerate(splits, start=1):
             print(
-                f"Trial {trial}/{trials}, fold {fold}/{len(splits)}: {hp}", flush=True
+                f"Trial {trial} ({position}/{len(candidates)}), "
+                f"fold {fold}/{len(splits)}: {hp}",
+                flush=True,
             )
             train = frame.loc[frame.patient_id.isin(train_ids)]
             validation = frame.loc[frame.patient_id.isin(val_ids)]
