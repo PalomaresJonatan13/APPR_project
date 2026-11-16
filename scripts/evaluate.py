@@ -13,7 +13,7 @@ from appr_project.data import (
     load_partition,
 )
 from appr_project.evaluation import predict_hours, summarize_metrics
-from appr_project.models import semantic_grud, tower_grud  # noqa: F401
+from appr_project.models import semantic_grud, tower_grud, vs_gru  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 

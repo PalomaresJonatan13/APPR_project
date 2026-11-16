@@ -48,9 +48,16 @@ def main():
     parser.add_argument("--window", type=int, default=Hyperparameters.window)
     parser.add_argument("--units", type=int, default=16)
     parser.add_argument("--dense-units", type=int, default=64)
+    parser.add_argument(
+        "--use-hidden-dense",
+        action="store_true",
+        help="Enable the 32-unit ReLU layer in the base VS-GRU configuration.",
+    )
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--learning-rate", type=float, default=0.001)
     args = parser.parse_args()
+    if args.use_hidden_dense and args.architecture != "vs_gru":
+        parser.error("--use-hidden-dense requires --architecture vs_gru.")
     if args.search == "tpe" and args.folds is not None:
         parser.error("--search tpe requires holdout validation. Omit --folds.")
     if args.trials is None:
@@ -96,6 +103,7 @@ def main():
         dropout=args.dropout,
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
+        use_hidden_dense=args.use_hidden_dense,
     )
     metrics = train_experiment(
         frame,

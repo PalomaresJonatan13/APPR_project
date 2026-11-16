@@ -38,6 +38,8 @@ def _read_group(runs_dir, *, nombre, origen, trials, epochs, patience):
     )
     if "batch_size" not in trial_rows and "batch_size" in config:
         trial_rows["batch_size"] = config["batch_size"]
+    if "use_hidden_dense" not in trial_rows:
+        trial_rows["use_hidden_dense"] = Hyperparameters.use_hidden_dense
     missing = set(trials) - set(trial_rows.index)
     if missing:
         raise ValueError(f"{origen}: no se encontraron los trials {sorted(missing)}.")

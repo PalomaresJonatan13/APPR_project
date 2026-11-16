@@ -1,7 +1,7 @@
 """Holdout or cross-validation, hyperparameter search, and Keras artifacts."""
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from statistics import median
 from time import perf_counter
@@ -17,9 +17,9 @@ from appr_project.data import (
     split_patients,
 )
 from appr_project.evaluation import predict_hours, select_threshold, summarize_metrics
-from appr_project.models import semantic_grud, tower_grud
+from appr_project.models import semantic_grud, tower_grud, vs_gru
 
-ARCHITECTURES = ("tower_grud", *semantic_grud.GROUPS_BY_ARCHITECTURE)
+ARCHITECTURES = ("tower_grud", *semantic_grud.GROUPS_BY_ARCHITECTURE, "vs_gru")
 WINDOW_CHOICES = (8, 12, 16)
 UNIT_CHOICES = (8, 16, 32)
 DENSE_CHOICES = (32, 64)
@@ -40,9 +40,10 @@ class Hyperparameters:
     dropout: float = 0.2
     learning_rate: float = 0.001
     batch_size: int = 64
+    use_hidden_dense: bool = False
 
 
-def search_candidates(base, trials, seed):
+def search_candidates(base, trials, seed, architecture="tower_grud"):
     """Evaluate the supplied configuration first, then sample distinct alternatives."""
     if trials < 1:
         raise ValueError("trials must be positive.")
@@ -50,14 +51,30 @@ def search_candidates(base, trials, seed):
     rng = np.random.default_rng(seed)
     candidates = [base]
     seen = {base}
+    if architecture == "vs_gru" and trials > 1:
+        alternate = replace(base, use_hidden_dense=not base.use_hidden_dense)
+        candidates.append(alternate)
+        seen.add(alternate)
     while len(candidates) < trials:
+        window = int(rng.choice(WINDOW_CHOICES))
+        if architecture == "vs_gru":
+            model_options = {
+                "units": base.units,
+                "dense_units": base.dense_units,
+                "dropout": base.dropout,
+                "use_hidden_dense": bool(rng.integers(2)),
+            }
+        else:
+            model_options = {
+                "units": int(rng.choice(UNIT_CHOICES)),
+                "dense_units": int(rng.choice(DENSE_CHOICES)),
+                "dropout": rng.uniform(*DROPOUT_RANGE),
+            }
         candidate = Hyperparameters(
-            window=int(rng.choice(WINDOW_CHOICES)),
-            units=int(rng.choice(UNIT_CHOICES)),
-            dense_units=int(rng.choice(DENSE_CHOICES)),
-            dropout=rng.uniform(*DROPOUT_RANGE),
+            window=window,
             learning_rate=10.0 ** rng.uniform(*np.log10(LEARNING_RATE_RANGE)),
             batch_size=int(rng.choice(BATCH_CHOICES)),
+            **model_options,
         )
         if candidate not in seen:
             candidates.append(candidate)
@@ -65,16 +82,28 @@ def search_candidates(base, trials, seed):
     return candidates
 
 
-def _tpe_suggestions(trial):
-    return Hyperparameters(
-        window=trial.suggest_categorical("window", WINDOW_CHOICES),
-        units=trial.suggest_categorical("units", UNIT_CHOICES),
-        dense_units=trial.suggest_categorical("dense_units", DENSE_CHOICES),
-        dropout=trial.suggest_float("dropout", *DROPOUT_RANGE),
+def _tpe_suggestions(trial, architecture, base):
+    window = trial.suggest_categorical("window", WINDOW_CHOICES)
+    if architecture == "vs_gru":
+        model_options = {
+            "use_hidden_dense": trial.suggest_categorical(
+                "use_hidden_dense", [False, True]
+            ),
+        }
+    else:
+        model_options = {
+            "units": trial.suggest_categorical("units", UNIT_CHOICES),
+            "dense_units": trial.suggest_categorical("dense_units", DENSE_CHOICES),
+            "dropout": trial.suggest_float("dropout", *DROPOUT_RANGE),
+        }
+    return replace(
+        base,
+        window=window,
         learning_rate=trial.suggest_float(
             "learning_rate", *LEARNING_RATE_RANGE, log=True
         ),
         batch_size=trial.suggest_categorical("batch_size", BATCH_CHOICES),
+        **model_options,
     )
 
 
@@ -114,7 +143,14 @@ def _fit(train, validation, hp, *, epochs, patience, seed, architecture, pruning
         "dense_units": hp.dense_units,
         "dropout": hp.dropout,
     }
-    if architecture in semantic_grud.GROUPS_BY_ARCHITECTURE:
+    if architecture == "vs_gru":
+        model = vs_gru.build_model(
+            variables=len(standardization.temporal),
+            static_features=hours.static.shape[-1],
+            window=hp.window,
+            use_hidden_dense=hp.use_hidden_dense,
+        )
+    elif architecture in semantic_grud.GROUPS_BY_ARCHITECTURE:
         model = semantic_grud.build_model(
             temporal_variables=standardization.temporal,
             architecture=architecture,
@@ -226,7 +262,9 @@ def train_experiment(
     elif candidates is None:
         if base is None or trials is None:
             raise ValueError("Supply base and trials for a random search.")
-        candidates = dict(enumerate(search_candidates(base, trials, seed), start=1))
+        candidates = dict(
+            enumerate(search_candidates(base, trials, seed, architecture), start=1)
+        )
     if not use_tpe and not candidates:
         raise ValueError("Supply at least one trial.")
     splits = patient_splits
@@ -258,14 +296,25 @@ def train_experiment(
         )
         base_in_space = (
             base.window in WINDOW_CHOICES
-            and base.units in UNIT_CHOICES
-            and base.dense_units in DENSE_CHOICES
             and base.batch_size in BATCH_CHOICES
-            and DROPOUT_RANGE[0] <= base.dropout <= DROPOUT_RANGE[1]
             and LEARNING_RATE_RANGE[0] <= base.learning_rate <= LEARNING_RATE_RANGE[1]
+            and (
+                architecture == "vs_gru"
+                or (
+                    base.units in UNIT_CHOICES
+                    and base.dense_units in DENSE_CHOICES
+                    and DROPOUT_RANGE[0] <= base.dropout <= DROPOUT_RANGE[1]
+                )
+            )
         )
         if base_in_space:
-            study.enqueue_trial(asdict(base))
+            params = asdict(base)
+            if architecture == "vs_gru":
+                for name in ("units", "dense_units", "dropout"):
+                    del params[name]
+            else:
+                del params["use_hidden_dense"]
+            study.enqueue_trial(params)
 
     total_trials = trials if use_tpe else len(candidates)
     trial_ids = range(1, total_trials + 1) if use_tpe else candidates
@@ -308,7 +357,7 @@ def train_experiment(
             hp = (
                 base
                 if position == 1 and not base_in_space
-                else _tpe_suggestions(optuna_trial)
+                else _tpe_suggestions(optuna_trial, architecture, base)
             )
             pruning = _MedianPruningCallback(optuna_trial)
         else:

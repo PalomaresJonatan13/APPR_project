@@ -8,6 +8,9 @@ from tensorflow import keras
 class VariableGRUDCell(keras.layers.Layer):
     """Vectorize towers along the variable axis while keeping separate weights."""
 
+    input_channels = 4
+    gate_input_size = 2
+
     def __init__(self, variables, units, **kwargs):
         super().__init__(**kwargs)
         self.n_variables = variables
@@ -19,7 +22,7 @@ class VariableGRUDCell(keras.layers.Layer):
         variables, units = self.n_variables, self.units
         self.input_kernel = self.add_weight(
             name="input_kernel",
-            shape=(variables, 2, 3 * units),
+            shape=(variables, self.gate_input_size, 3 * units),
             initializer="glorot_uniform",
         )
         self.recurrent_kernel = self.add_weight(
@@ -45,8 +48,8 @@ class VariableGRUDCell(keras.layers.Layer):
         super().build(input_shape)
 
     def call(self, inputs, states):
-        inputs = tf.reshape(inputs, (-1, self.n_variables, 4))
-        value, observed, elapsed, previous = tf.unstack(inputs, axis=-1)
+        inputs = tf.reshape(inputs, (-1, self.n_variables, self.input_channels))
+        value, observed, elapsed, previous = tf.unstack(inputs[..., :4], axis=-1)
         hidden = tf.reshape(states[0], (-1, self.n_variables, self.units))
 
         # The training mean is zero in standardized units.
@@ -59,7 +62,7 @@ class VariableGRUDCell(keras.layers.Layer):
         )
         hidden = gamma_h * hidden
 
-        features = tf.stack((value, observed), axis=-1)
+        features = self._gate_features(value, observed, inputs)
         x_update, x_reset, x_candidate = tf.split(
             tf.einsum("bvi,viu->bvu", features, self.input_kernel) + self.bias,
             3,
@@ -80,6 +83,9 @@ class VariableGRUDCell(keras.layers.Layer):
             (1 - update) * hidden + update * candidate, (-1, self.state_size)
         )
         return state, [state]
+
+    def _gate_features(self, value, observed, inputs):
+        return tf.stack((value, observed), axis=-1)
 
     def get_config(self):
         return {
