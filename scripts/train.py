@@ -26,12 +26,17 @@ def main():
     )
     parser.add_argument("--validation-fraction", type=float, default=0.2)
     parser.add_argument(
+        "--search",
+        choices=("random", "tpe"),
+        default="random",
+        help="Use TPE with median pruning on a single validation split.",
+    )
+    parser.add_argument(
         "--trials",
         type=int,
-        default=1,
-        help="Number of random-search trials, including the base configuration.",
+        help="Trial count including the base (default: 1 for random, 20 for TPE).",
     )
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int)
     parser.add_argument("--patience", type=int, default=4)
     parser.add_argument(
         "--batch-size",
@@ -40,12 +45,20 @@ def main():
         help="Batch size for the base configuration.",
     )
     parser.add_argument("--seed", type=int, default=2026)
-    parser.add_argument("--window", type=int, default=15)
+    parser.add_argument("--window", type=int, default=Hyperparameters.window)
     parser.add_argument("--units", type=int, default=16)
     parser.add_argument("--dense-units", type=int, default=64)
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--learning-rate", type=float, default=0.001)
     args = parser.parse_args()
+    if args.search == "tpe" and args.folds is not None:
+        parser.error("--search tpe requires holdout validation. Omit --folds.")
+    if args.trials is None:
+        args.trials = 20 if args.search == "tpe" else 1
+    if args.epochs is None:
+        args.epochs = 30 if args.search == "tpe" else 20
+    if args.sample_patients is None and args.search == "tpe":
+        args.sample_patients = 2000
     if (
         min(
             args.trials,
@@ -97,6 +110,7 @@ def main():
         patience=args.patience,
         seed=args.seed,
         architecture=args.architecture,
+        search=args.search,
     )
     print(metrics.to_string(index=False))
     print(f"Artifacts: {run_dir.resolve()}")

@@ -1,4 +1,4 @@
-"""Holdout or cross-validation, random search, and Keras artifacts."""
+"""Holdout or cross-validation, hyperparameter search, and Keras artifacts."""
 
 import json
 from dataclasses import asdict, dataclass
@@ -20,11 +20,21 @@ from appr_project.evaluation import predict_hours, select_threshold, summarize_m
 from appr_project.models import semantic_grud, tower_grud
 
 ARCHITECTURES = ("tower_grud", *semantic_grud.GROUPS_BY_ARCHITECTURE)
+WINDOW_CHOICES = (8, 12, 16)
+UNIT_CHOICES = (8, 16, 32)
+DENSE_CHOICES = (32, 64)
+BATCH_CHOICES = (64, 128, 256)
+DROPOUT_RANGE = (0.0, 0.3)
+LEARNING_RATE_RANGE = (0.0001, 0.01)
+TPE_STARTUP_TRIALS = 10
+PRUNING_STARTUP_TRIALS = 5
+PRUNING_WARMUP_STEPS = 7  # Keras numbers epochs from zero.
+PRUNING_MIN_TRIALS = 3
 
 
 @dataclass(frozen=True)
 class Hyperparameters:
-    window: int = 15
+    window: int = 16
     units: int = 16
     dense_units: int = 64
     dropout: float = 0.2
@@ -42,12 +52,12 @@ def search_candidates(base, trials, seed):
     seen = {base}
     while len(candidates) < trials:
         candidate = Hyperparameters(
-            window=int(rng.integers(8, 24, endpoint=True)),
-            units=int(rng.integers(8, 32, endpoint=True)),
-            dense_units=int(rng.choice((32, 64))),
-            dropout=rng.uniform(0.0, 0.3),
-            learning_rate=10.0 ** rng.uniform(-4.0, -2.0),
-            batch_size=int(rng.choice((64, 128, 256))),
+            window=int(rng.choice(WINDOW_CHOICES)),
+            units=int(rng.choice(UNIT_CHOICES)),
+            dense_units=int(rng.choice(DENSE_CHOICES)),
+            dropout=rng.uniform(*DROPOUT_RANGE),
+            learning_rate=10.0 ** rng.uniform(*np.log10(LEARNING_RATE_RANGE)),
+            batch_size=int(rng.choice(BATCH_CHOICES)),
         )
         if candidate not in seen:
             candidates.append(candidate)
@@ -55,7 +65,33 @@ def search_candidates(base, trials, seed):
     return candidates
 
 
-def _fit(train, validation, hp, *, epochs, patience, seed, architecture):
+def _tpe_suggestions(trial):
+    return Hyperparameters(
+        window=trial.suggest_categorical("window", WINDOW_CHOICES),
+        units=trial.suggest_categorical("units", UNIT_CHOICES),
+        dense_units=trial.suggest_categorical("dense_units", DENSE_CHOICES),
+        dropout=trial.suggest_float("dropout", *DROPOUT_RANGE),
+        learning_rate=trial.suggest_float(
+            "learning_rate", *LEARNING_RATE_RANGE, log=True
+        ),
+        batch_size=trial.suggest_categorical("batch_size", BATCH_CHOICES),
+    )
+
+
+class _MedianPruningCallback(keras.callbacks.Callback):
+    def __init__(self, trial):
+        super().__init__()
+        self.trial = trial
+        self.pruned = False
+
+    def on_epoch_end(self, epoch, logs=None):
+        self.trial.report(float(logs["val_pr_auc"]), step=epoch)
+        if self.trial.should_prune():
+            self.pruned = True
+            self.model.stop_training = True
+
+
+def _fit(train, validation, hp, *, epochs, patience, seed, architecture, pruning=None):
     keras.backend.clear_session()
     keras.utils.set_random_seed(seed)
     started = perf_counter()
@@ -104,6 +140,8 @@ def _fit(train, validation, hp, *, epochs, patience, seed, architecture):
                 restore_best_weights=True,
             )
         )
+    if pruning is not None:
+        callbacks.append(pruning)
     started = perf_counter()
     history = model.fit(
         train_batches,
@@ -126,7 +164,11 @@ def _fit(train, validation, hp, *, epochs, patience, seed, architecture):
         "best_epoch": best_epoch,
         "seconds_per_epoch": fit_seconds / len(history["loss"]),
     }
-    predictions = predict_hours(model, val_batches) if val_batches is not None else None
+    predictions = (
+        predict_hours(model, val_batches)
+        if val_batches is not None and (pruning is None or not pruning.pruned)
+        else None
+    )
     return model, standardization, predictions, timing
 
 
@@ -167,16 +209,25 @@ def train_experiment(
     architecture="tower_grud",
     candidates=None,
     patient_splits=None,
+    search="random",
 ):
-    """Train random search candidates or an explicit mapping of trial IDs to settings."""
+    """Evaluate explicit candidates, random search, or TPE with holdout pruning."""
     if architecture not in ARCHITECTURES:
         raise ValueError(f"Unknown architecture: {architecture}")
+    if search not in ("random", "tpe"):
+        raise ValueError(f"Unknown search method: {search}")
     run_started = perf_counter()
-    if candidates is None:
+    use_tpe = search == "tpe"
+    if use_tpe:
+        if candidates is not None or folds is not None:
+            raise ValueError("TPE pruning requires a search with one validation split.")
+        if base is None or trials is None or trials < 1:
+            raise ValueError("Supply a base configuration and a positive trial count.")
+    elif candidates is None:
         if base is None or trials is None:
             raise ValueError("Supply base and trials for a random search.")
         candidates = dict(enumerate(search_candidates(base, trials, seed), start=1))
-    if not candidates:
+    if not use_tpe and not candidates:
         raise ValueError("Supply at least one trial.")
     splits = patient_splits
     if splits is None:
@@ -189,6 +240,35 @@ def train_experiment(
                 sample_patients=sample_patients,
             )
         )
+    if use_tpe:
+        if len(splits) != 1:
+            raise ValueError("TPE pruning requires exactly one validation split.")
+        import optuna
+
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(
+                seed=seed, n_startup_trials=TPE_STARTUP_TRIALS
+            ),
+            pruner=optuna.pruners.MedianPruner(
+                n_startup_trials=PRUNING_STARTUP_TRIALS,
+                n_warmup_steps=PRUNING_WARMUP_STEPS,
+                n_min_trials=PRUNING_MIN_TRIALS,
+            ),
+        )
+        base_in_space = (
+            base.window in WINDOW_CHOICES
+            and base.units in UNIT_CHOICES
+            and base.dense_units in DENSE_CHOICES
+            and base.batch_size in BATCH_CHOICES
+            and DROPOUT_RANGE[0] <= base.dropout <= DROPOUT_RANGE[1]
+            and LEARNING_RATE_RANGE[0] <= base.learning_rate <= LEARNING_RATE_RANGE[1]
+        )
+        if base_in_space:
+            study.enqueue_trial(asdict(base))
+
+    total_trials = trials if use_tpe else len(candidates)
+    trial_ids = range(1, total_trials + 1) if use_tpe else candidates
     run_dir.mkdir(parents=True, exist_ok=False)
     assignments = []
     for fold, (train_ids, val_ids) in enumerate(splits, start=1):
@@ -208,15 +288,35 @@ def train_experiment(
         "seed": seed,
         "epochs": epochs,
         "patience": patience,
-        "trials": len(candidates),
+        "trials": total_trials,
     }
+    if use_tpe:
+        settings.update(
+            search="tpe",
+            tpe_startup_trials=TPE_STARTUP_TRIALS,
+            pruning_startup_trials=PRUNING_STARTUP_TRIALS,
+            pruning_first_epoch=PRUNING_WARMUP_STEPS + 1,
+            pruning_min_trials=PRUNING_MIN_TRIALS,
+        )
     trial_rows, fold_rows = [], []
     best_score = -np.inf
-    for position, (trial, hp) in enumerate(candidates.items(), start=1):
+    for position, trial in enumerate(trial_ids, start=1):
+        pruning = None
+        if use_tpe:
+            optuna_trial = study.ask()
+            # Keep an explicitly supplied reference outside the search space fixed.
+            hp = (
+                base
+                if position == 1 and not base_in_space
+                else _tpe_suggestions(optuna_trial)
+            )
+            pruning = _MedianPruningCallback(optuna_trial)
+        else:
+            hp = candidates[trial]
         predictions, scores, best_epochs = [], [], []
         for fold, (train_ids, val_ids) in enumerate(splits, start=1):
             print(
-                f"Trial {trial} ({position}/{len(candidates)}), "
+                f"Trial {trial} ({position}/{total_trials}), "
                 f"fold {fold}/{len(splits)}: {hp}",
                 flush=True,
             )
@@ -234,7 +334,10 @@ def train_experiment(
                 patience=patience,
                 seed=seed + fold,
                 architecture=architecture,
+                pruning=pruning,
             )
+            if pruning is not None and pruning.pruned:
+                break
             val["fold"] = fold
             threshold = select_threshold(val)
             metrics = summarize_metrics(val, threshold)
@@ -250,18 +353,31 @@ def train_experiment(
                 for row in metrics.to_dict("records")
             )
 
-        score = float(np.mean(scores))
-        trial_rows.append(
-            {
-                "trial": trial,
-                **asdict(hp),
-                "mean_validation_ap": score,
-                "std_validation_ap": float(np.std(scores)),
-            }
-        )
+        pruned = pruning is not None and pruning.pruned
+        score = None if pruned else float(np.mean(scores))
+        trial_row = {
+            "trial": trial,
+            **asdict(hp),
+            "mean_validation_ap": score,
+            "std_validation_ap": None if pruned else float(np.std(scores)),
+        }
+        if use_tpe:
+            state = (
+                optuna.trial.TrialState.PRUNED
+                if pruned
+                else optuna.trial.TrialState.COMPLETE
+            )
+            study.tell(optuna_trial, score, state=state)
+            trial_row.update(state=state.name, **timing)
+            if pruned:
+                print(
+                    f"Trial {trial} pruned after {timing['epochs_run']} epochs.",
+                    flush=True,
+                )
+        trial_rows.append(trial_row)
         pd.DataFrame(trial_rows).to_csv(run_dir / "trials.csv", index=False)
         pd.DataFrame(fold_rows).to_csv(run_dir / "fold_metrics.csv", index=False)
-        if score > best_score:
+        if score is not None and score > best_score:
             best_score, best_hp, best_trial = score, hp, trial
             best_predictions = pd.concat(predictions, ignore_index=True)
             best_threshold = select_threshold(best_predictions)

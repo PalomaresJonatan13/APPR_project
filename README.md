@@ -46,8 +46,9 @@ For a timing pilot with an 80/20 patient-level train/validation split:
 uv run --extra model python scripts/train.py --source A --sample-patients 300 --epochs 2
 ```
 
-Choose `A`, `B`, or `A+B` with `--source`. Omit `--sample-patients` to use the
-full training partition. Pass `--architecture semantic_grud` to train five
+Choose `A`, `B`, or `A+B` with `--source`. With random search, omit
+`--sample-patients` to use the full training partition. Pass
+`--architecture semantic_grud` to train five
 multivariate GRU-D towers with temporal attention and patient context. The
 default `tower_grud` uses one tower per variable. Add `--trials 8` to try the base
 configuration plus seven random alternatives for window length, GRU-D units, dense units, dropout,
@@ -57,6 +58,22 @@ selected by validation PR AUC and trials by validation average precision. Add
 `--folds 5` to use stratified CV instead of holdout. CV ranks trials by mean
 fold average precision, selects an alert threshold on out-of-fold predictions,
 and refits on the CV cohort for the median number of selected epochs.
+
+To run the 2,000-patient TPE search with median pruning:
+
+```powershell
+uv run --extra model python scripts/train.py --architecture semantic_grud_3 --search tpe
+```
+
+Use `semantic_grud` for five towers. By default, the TPE pilot runs 20 trials
+of up to 30 epochs with early stopping patience 4. It evaluates the base first,
+then uses TPE after 10 startup trials. It searches windows of 8, 12, or 16 hours.
+Median pruning checks validation PR AUC from trial 6 and epoch 8 onward when at
+least three completed trials reported at that epoch. The trial CSV records the
+state, epochs trained, and fit time for pruned trials. Only completed trials
+receive an average precision score. To cross-validate the selected configuration,
+pass its hyperparameters with `--search random --trials 1 --folds 3` and omit
+`--sample-patients` to use the full development partition.
 
 The model scores each recorded hour using only information available by that
 hour. The input pipeline fits its scaler on training observations and builds
