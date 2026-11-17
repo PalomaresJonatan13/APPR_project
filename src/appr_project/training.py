@@ -25,6 +25,7 @@ UNIT_CHOICES = (8, 16, 32)
 DENSE_CHOICES = (32, 64)
 BATCH_CHOICES = (64, 128, 256)
 DROPOUT_RANGE = (0.0, 0.3)
+L2_CHOICES = (0.0, 1e-5, 1e-4)
 LEARNING_RATE_RANGE = (0.0001, 0.01)
 TPE_STARTUP_TRIALS = 10
 PRUNING_STARTUP_TRIALS = 5
@@ -41,6 +42,8 @@ class Hyperparameters:
     learning_rate: float = 0.001
     batch_size: int = 64
     use_hidden_dense: bool = False
+    kernel_l2: float = 0.0
+    recurrent_l2: float = 0.0
 
 
 def search_candidates(base, trials, seed, architecture="tower_grud"):
@@ -69,6 +72,8 @@ def search_candidates(base, trials, seed, architecture="tower_grud"):
                 "units": int(rng.choice(UNIT_CHOICES)),
                 "dense_units": int(rng.choice(DENSE_CHOICES)),
                 "dropout": rng.uniform(*DROPOUT_RANGE),
+                "kernel_l2": float(rng.choice(L2_CHOICES)),
+                "recurrent_l2": float(rng.choice(L2_CHOICES)),
             }
         candidate = Hyperparameters(
             window=window,
@@ -95,6 +100,8 @@ def _tpe_suggestions(trial, architecture, base):
             "units": trial.suggest_categorical("units", UNIT_CHOICES),
             "dense_units": trial.suggest_categorical("dense_units", DENSE_CHOICES),
             "dropout": trial.suggest_float("dropout", *DROPOUT_RANGE),
+            "kernel_l2": trial.suggest_categorical("kernel_l2", L2_CHOICES),
+            "recurrent_l2": trial.suggest_categorical("recurrent_l2", L2_CHOICES),
         }
     return replace(
         base,
@@ -142,6 +149,8 @@ def _fit(train, validation, hp, *, epochs, patience, seed, architecture, pruning
         "units": hp.units,
         "dense_units": hp.dense_units,
         "dropout": hp.dropout,
+        "kernel_l2": hp.kernel_l2,
+        "recurrent_l2": hp.recurrent_l2,
     }
     if architecture == "vs_gru":
         model = vs_gru.build_model(
@@ -304,13 +313,21 @@ def train_experiment(
                     base.units in UNIT_CHOICES
                     and base.dense_units in DENSE_CHOICES
                     and DROPOUT_RANGE[0] <= base.dropout <= DROPOUT_RANGE[1]
+                    and base.kernel_l2 in L2_CHOICES
+                    and base.recurrent_l2 in L2_CHOICES
                 )
             )
         )
         if base_in_space:
             params = asdict(base)
             if architecture == "vs_gru":
-                for name in ("units", "dense_units", "dropout"):
+                for name in (
+                    "units",
+                    "dense_units",
+                    "dropout",
+                    "kernel_l2",
+                    "recurrent_l2",
+                ):
                     del params[name]
             else:
                 del params["use_hidden_dense"]

@@ -5,7 +5,12 @@ from datetime import datetime
 from pathlib import Path
 
 from appr_project.data import load_partition
-from appr_project.training import ARCHITECTURES, Hyperparameters, train_experiment
+from appr_project.training import (
+    ARCHITECTURES,
+    L2_CHOICES,
+    Hyperparameters,
+    train_experiment,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,10 +59,21 @@ def main():
         help="Enable the 32-unit ReLU layer in the base VS-GRU configuration.",
     )
     parser.add_argument("--dropout", type=float, default=0.2)
+    parser.add_argument(
+        "--kernel-l2", type=float, choices=L2_CHOICES, default=Hyperparameters.kernel_l2
+    )
+    parser.add_argument(
+        "--recurrent-l2",
+        type=float,
+        choices=L2_CHOICES,
+        default=Hyperparameters.recurrent_l2,
+    )
     parser.add_argument("--learning-rate", type=float, default=0.001)
     args = parser.parse_args()
     if args.use_hidden_dense and args.architecture != "vs_gru":
         parser.error("--use-hidden-dense requires --architecture vs_gru.")
+    if args.architecture == "vs_gru" and (args.kernel_l2 or args.recurrent_l2):
+        parser.error("--kernel-l2 and --recurrent-l2 require a tower architecture.")
     if args.search == "tpe" and args.folds is not None:
         parser.error("--search tpe requires holdout validation. Omit --folds.")
     if args.trials is None:
@@ -104,6 +120,8 @@ def main():
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
         use_hidden_dense=args.use_hidden_dense,
+        kernel_l2=args.kernel_l2,
+        recurrent_l2=args.recurrent_l2,
     )
     metrics = train_experiment(
         frame,

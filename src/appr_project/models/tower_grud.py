@@ -11,10 +11,12 @@ class VariableGRUDCell(keras.layers.Layer):
     input_channels = 4
     gate_input_size = 2
 
-    def __init__(self, variables, units, **kwargs):
+    def __init__(self, variables, units, *, kernel_l2=0.0, recurrent_l2=0.0, **kwargs):
         super().__init__(**kwargs)
         self.n_variables = variables
         self.units = units
+        self.kernel_l2 = kernel_l2
+        self.recurrent_l2 = recurrent_l2
         self.state_size = variables * units
         self.output_size = self.state_size
 
@@ -24,11 +26,17 @@ class VariableGRUDCell(keras.layers.Layer):
             name="input_kernel",
             shape=(variables, self.gate_input_size, 3 * units),
             initializer="glorot_uniform",
+            regularizer=keras.regularizers.L2(self.kernel_l2)
+            if self.kernel_l2
+            else None,
         )
         self.recurrent_kernel = self.add_weight(
             name="recurrent_kernel",
             shape=(variables, units, 3 * units),
             initializer="glorot_uniform",
+            regularizer=(
+                keras.regularizers.L2(self.recurrent_l2) if self.recurrent_l2 else None
+            ),
         )
         self.bias = self.add_weight(
             name="bias", shape=(variables, 3 * units), initializer="zeros"
@@ -92,6 +100,8 @@ class VariableGRUDCell(keras.layers.Layer):
             **super().get_config(),
             "variables": self.n_variables,
             "units": self.units,
+            "kernel_l2": self.kernel_l2,
+            "recurrent_l2": self.recurrent_l2,
         }
 
 
@@ -112,14 +122,26 @@ class VariableAttention(keras.layers.Layer):
         return tf.einsum("btv,btvu->bvu", weights, states)
 
 
-def build_model(*, variables, static_features, window, units, dense_units, dropout):
+def build_model(
+    *,
+    variables,
+    static_features,
+    window,
+    units,
+    dense_units,
+    dropout,
+    kernel_l2=0.0,
+    recurrent_l2=0.0,
+):
     layers = keras.layers
     temporal = keras.Input((window, variables, 4), name="temporal")
     valid_hours = keras.Input((window,), dtype="bool", name="valid_hours")
     static = keras.Input((static_features,), name="static")
     flat = layers.Reshape((window, variables * 4))(temporal)
     states = layers.RNN(
-        VariableGRUDCell(variables, units),
+        VariableGRUDCell(
+            variables, units, kernel_l2=kernel_l2, recurrent_l2=recurrent_l2
+        ),
         return_sequences=True,
         zero_output_for_mask=True,
     )(flat, mask=valid_hours)

@@ -55,13 +55,22 @@ def semantic_indices(temporal, groups=SEMANTIC_GROUPS):
 
 @keras.utils.register_keras_serializable(package="appr_project")
 class SemanticGRUDCell(keras.layers.Layer):
-    def __init__(self, variables, units, **kwargs):
+    def __init__(self, variables, units, *, kernel_l2=0.0, recurrent_l2=0.0, **kwargs):
         super().__init__(**kwargs)
         self.n_variables = variables
         self.units = units
         self.state_size = units
         self.output_size = units
-        self.gru = keras.layers.GRUCell(units, reset_after=False)
+        self.kernel_l2 = kernel_l2
+        self.recurrent_l2 = recurrent_l2
+        self.gru = keras.layers.GRUCell(
+            units,
+            reset_after=False,
+            kernel_regularizer=keras.regularizers.L2(kernel_l2) if kernel_l2 else None,
+            recurrent_regularizer=(
+                keras.regularizers.L2(recurrent_l2) if recurrent_l2 else None
+            ),
+        )
         self.hidden_decay = keras.layers.Dense(units)
 
     def build(self, input_shape):
@@ -95,6 +104,8 @@ class SemanticGRUDCell(keras.layers.Layer):
             **super().get_config(),
             "variables": self.n_variables,
             "units": self.units,
+            "kernel_l2": self.kernel_l2,
+            "recurrent_l2": self.recurrent_l2,
         }
 
 
@@ -106,6 +117,8 @@ def build_model(
     units,
     dense_units,
     dropout,
+    kernel_l2=0.0,
+    recurrent_l2=0.0,
     architecture="semantic_grud",
 ):
     groups = semantic_indices(temporal_variables, GROUPS_BY_ARCHITECTURE[architecture])
@@ -118,7 +131,9 @@ def build_model(
         grouped = ops.take(temporal, indices, axis=2)
         flat = layers.Reshape((window, len(indices) * 4))(grouped)
         states = layers.RNN(
-            SemanticGRUDCell(len(indices), units),
+            SemanticGRUDCell(
+                len(indices), units, kernel_l2=kernel_l2, recurrent_l2=recurrent_l2
+            ),
             return_sequences=True,
             zero_output_for_mask=True,
             name=name,
